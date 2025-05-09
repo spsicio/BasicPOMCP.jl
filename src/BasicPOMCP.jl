@@ -30,6 +30,8 @@ export
     POMCPSolver,
     POMCPPlanner,
 
+    MaxUCB,
+
     action,
     solve,
     updater,
@@ -69,9 +71,9 @@ Partially Observable Monte Carlo Planning Solver.
     Rollouts and tree expension will stop when this depth is reached.
     default: `20`
 
-- `c::Float64`
-    UCB exploration constant - specifies how much the solver should explore.
-    default: `1.0`
+- `criterion::Any`
+    Criterion to decide which action to take at each node. e.g. `MaxUCB(c)`
+    default: `MaxUCB(1.0)`
 
 - `tree_queries::Int`
     Number of iterations during each action() call.
@@ -110,7 +112,7 @@ Partially Observable Monte Carlo Planning Solver.
 """
 @with_kw mutable struct POMCPSolver <: AbstractPOMCPSolver
     max_depth::Int          = 20
-    c::Float64              = 1.0
+    criterion               = MaxUCB(1.0)
     tree_queries::Int       = 1000
     max_time::Float64       = Inf
     tree_in_info::Bool      = false
@@ -211,6 +213,7 @@ end
 mutable struct POMCPPlanner{P, SE, T, RNG} <: Policy
     solver::POMCPSolver
     problem::P
+    criterion::Any
     solved_estimator::SE
     time::T
     rng::RNG
@@ -220,7 +223,7 @@ end
 
 function POMCPPlanner(solver::POMCPSolver, pomdp::POMDP)
     se = convert_estimator(solver.estimate_value, solver, pomdp)
-    return POMCPPlanner(solver, pomdp, se, solver.time, solver.rng, Int[], nothing)
+    return POMCPPlanner(solver, pomdp, solver.criterion, se, solver.time, solver.rng, Int[], nothing)
 end
 
 Random.seed!(p::POMCPPlanner, seed) = Random.seed!(p.rng, seed)
@@ -239,6 +242,7 @@ function updater(p::POMCPPlanner)
     # return SIRParticleFilter(p.problem, p.solver.tree_queries, rng=p.rng)
 end
 
+include("criteria.jl")
 include("solver.jl")
 
 include("exceptions.jl")

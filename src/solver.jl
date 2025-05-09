@@ -67,27 +67,7 @@ function simulate(p::POMCPPlanner, s, hnode::POMCPObsNode, steps::Int)
     t = hnode.tree
     h = hnode.node
 
-    ltn = log(t.total_n[h])
-    best_nodes = empty!(p._best_node_mem)
-    best_criterion_val = -Inf
-    for node in t.children[h]
-        n = t.n[node]
-        if n == 0 && ltn <= 0.0
-            criterion_value = t.v[node]
-        elseif n == 0 && t.v[node] == -Inf
-            criterion_value = Inf
-        else
-            criterion_value = t.v[node] + p.solver.c*sqrt(ltn/n)
-        end
-        if criterion_value > best_criterion_val
-            best_criterion_val = criterion_value
-            empty!(best_nodes)
-            push!(best_nodes, node)
-        elseif criterion_value == best_criterion_val
-            push!(best_nodes, node)
-        end
-    end
-    ha = rand(p.rng, best_nodes)
+    ha = select_best(p.criterion, hnode, p._best_node_mem, p.rng)
     a = t.a_labels[ha]
 
     sp, o, r = @gen(:sp, :o, :r)(p.problem, s, a, p.rng)
