@@ -2,7 +2,7 @@ function POMDPTools.action_info(p::POMCPPlanner, b; tree_in_info=false)
     local a::actiontype(p.problem)
     info = Dict{Symbol, Any}()
     try
-        tree = POMCPTree(p.problem, b, p.solver.tree_queries)
+        tree = POMCPTree(p, b, p.solver.tree_queries)
         a = search(p, b, tree, info)
         p._tree = tree
         if p.solver.tree_in_info || tree_in_info
@@ -75,14 +75,22 @@ function simulate(p::POMCPPlanner, s, hnode::POMCPObsNode, steps::Int)
     hao = get(t.o_lookup, (ha, o), 0)
     if hao == 0
         hao = insert_obs_node!(t, p.problem, ha, sp, o)
+        push!(t.node_belief, init_node_belief(p.node_belief_updater, sp))
         v = estimate_value(p.solved_estimator,
                            p.problem,
                            sp,
                            POMCPObsNode(t, hao),
                            steps-1)
         R = r + discount(p.problem)*v
+        t.a_sum_ent[ha] += weighted_entropy(t.node_belief[hao])
     else
+        t.a_sum_ent[ha] -= weighted_entropy(t.node_belief[hao])
+        push_pariticle!(t.node_belief[hao], p.node_belief_updater, sp)
+        t.a_sum_ent[ha] += weighted_entropy(t.node_belief[hao])
         R = r + discount(p.problem)*simulate(p, sp, POMCPObsNode(t, hao), steps-1)
+        if t.a_max_delta_ent[ha] < t.o_max_delta_ent[hao] # BackPropagate
+            t.a_max_delta_ent[ha] = t.o_max_delta_ent[hao]
+        end
     end
 
     t.total_n[h] += 1

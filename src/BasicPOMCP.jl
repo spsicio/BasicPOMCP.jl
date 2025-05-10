@@ -31,6 +31,11 @@ export
     POMCPPlanner,
 
     MaxUCB,
+    MaxUCBe,
+
+    POMCPNodeFilter,
+    POMCPeNodeFilter,
+    POMCPgNodeFilter,
 
     action,
     solve,
@@ -118,39 +123,29 @@ Partially Observable Monte Carlo Planning Solver.
     tree_in_info::Bool      = false
     default_action::Any     = ExceptionRethrow()
     rng::AbstractRNG        = Random.GLOBAL_RNG
+    node_belief_updater     = POMCPNodeFilter()
     estimate_value::Any     = RolloutEstimator(RandomSolver(rng))
     time::Function          = ()->time_ns()*1e-9
 end
 
-struct POMCPTree{A,O}
+include("beliefs.jl")
+
+struct POMCPTree{A,B,O}
     # for each observation-terminated history
     total_n::Vector{Int}                 # total number of visits for an observation node
     children::Vector{Vector{Int}}        # indices of each of the children
     o_labels::Vector{O}                  # actual observation corresponding to this observation node
 
     o_lookup::Dict{Tuple{Int, O}, Int}   # mapping from (action node index, observation) to an observation node index
+    node_belief::Vector{B}
+    o_max_delta_ent::Vector{Float64}
 
     # for each action-terminated history
     n::Vector{Int}                       # number of visits for an action node
     v::Vector{Float64}                   # value estimate for an action node
     a_labels::Vector{A}                  # actual action corresponding to this action node
-end
-
-function POMCPTree(pomdp::POMDP, b, sz::Int=1000)
-    acts = collect(actions(pomdp, b))
-    A = actiontype(pomdp)
-    O = obstype(pomdp)
-    sz = min(100_000, sz)
-    return POMCPTree{A,O}(sizehint!(Int[0], sz),
-                          sizehint!(Vector{Int}[collect(1:length(acts))], sz),
-                          sizehint!(Array{O}(undef, 1), sz),
-
-                          sizehint!(Dict{Tuple{Int,O},Int}(), sz),
-
-                          sizehint!(zeros(Int, length(acts)), sz),
-                          sizehint!(zeros(Float64, length(acts)), sz),
-                          sizehint!(acts, sz)
-                         )
+    a_sum_ent::Vector{Float64}
+    a_max_delta_ent::Vector{Float64}
 end
 
 struct LeafNodeBelief{H, S} <: AbstractParticleBelief{S}
@@ -187,6 +182,7 @@ function insert_obs_node!(t::POMCPTree, pomdp::POMDP, ha::Int, sp, o)
     push!(t.total_n, 0)
     push!(t.children, sizehint!(Int[], length(acts)))
     push!(t.o_labels, o)
+    push!(t.o_max_delta_ent, 0.0)
     hao = length(t.total_n)
     t.o_lookup[(ha, o)] = hao
     for a in acts
@@ -200,6 +196,8 @@ function insert_action_node!(t::POMCPTree, h::Int, a)
     push!(t.n, 0)
     push!(t.v, 0.0)
     push!(t.a_labels, a)
+    push!(t.a_sum_ent, 0.0)
+    push!(t.a_max_delta_ent, 0.0)
     return length(t.n)
 end
 
@@ -210,9 +208,10 @@ struct POMCPObsNode{A,O} <: BeliefNode
     node::Int
 end
 
-mutable struct POMCPPlanner{P, SE, T, RNG} <: Policy
+mutable struct POMCPPlanner{P, NBU, SE, T, RNG} <: Policy
     solver::POMCPSolver
     problem::P
+    node_belief_updater::NBU
     criterion::Any
     solved_estimator::SE
     time::T
@@ -223,11 +222,32 @@ end
 
 function POMCPPlanner(solver::POMCPSolver, pomdp::POMDP)
     se = convert_estimator(solver.estimate_value, solver, pomdp)
-    return POMCPPlanner(solver, pomdp, solver.criterion, se, solver.time, solver.rng, Int[], nothing)
+    return POMCPPlanner(solver, pomdp, solver.node_belief_updater, solver.criterion, se, solver.time, solver.rng, Int[], nothing)
 end
 
 Random.seed!(p::POMCPPlanner, seed) = Random.seed!(p.rng, seed)
 
+function POMCPTree(pomcp::POMCPPlanner{P, NBU}, b, sz::Int=1000) where {P, NBU}
+    acts = collect(actions(pomcp.problem, b))
+    A = actiontype(P)
+    O = obstype(P)
+    B = belief_type(NBU, P)
+    sz = min(100_000, sz)
+    return POMCPTree{A,B,O}(sizehint!(Int[0], sz),
+                          sizehint!(Vector{Int}[collect(1:length(acts))], sz),
+                          sizehint!(Array{O}(undef, 1), sz),
+
+                          sizehint!(Dict{Tuple{Int,O},Int}(), sz),
+                          sizehint!(Array{B}(undef, 1), sz), # node_belief
+                          sizehint!(Float64[0.0], sz), # o_max_delta_ent
+
+                          sizehint!(zeros(Int, length(acts)), sz),
+                          sizehint!(zeros(Float64, length(acts)), sz),
+                          sizehint!(acts, sz),
+                          sizehint!(zeros(Float64, length(acts)), sz), # a_sum_ent
+                          sizehint!(zeros(Float64, length(acts)), sz) # a_max_delta_ent
+                         )
+end
 
 function updater(p::POMCPPlanner)
     P = typeof(p.problem)
